@@ -1,0 +1,29 @@
+# Dependencies and generated output
+node_modules/
+dist/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+
+# Local configuration, databases, mail, and credentials
+.env
+.env.*
+!.env.example
+.local/
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Local tooling and temporary files
+.qoder/
+.idea/
+.vscode/
+.DS_Store
+*.log
+*.bak
+*.tmp
+*.swp
+/tests/

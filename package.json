@@ -1,0 +1,54 @@
+{
+  "name": "sme-attendance-backend",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.9"
+  },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "dev:demo": "cross-env DEMO_MODE=true tsx watch src/server.ts",
+    "dev:worker": "tsx watch src/worker.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "start:worker": "node dist/worker.js",
+    "typecheck": "tsc --noEmit",
+    "bootstrap:admin": "tsx src/scripts/bootstrap-admin.ts",
+    "db:indexes": "tsx src/scripts/ensure-indexes.ts"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  },
+  "dependencies": {
+    "argon2": "0.41.1",
+    "cookie-parser": "1.4.7",
+    "cors": "2.8.6",
+    "dotenv": "16.6.1",
+    "exceljs": "4.4.0",
+    "express": "5.3.0",
+    "express-rate-limit": "8.7.4",
+    "helmet": "8.3.0",
+    "jose": "5.10.0",
+    "luxon": "3.7.2",
+    "mongoose": "8.24.9",
+    "node-cron": "4.6.0",
+    "nodemailer": "10.6.0",
+    "pdfkit": "0.17.2",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "1.4.10",
+    "@types/cors": "2.8.19",
+    "@types/express": "5.0.6",
+    "@types/luxon": "3.7.6",
+    "@types/node": "22.20.5",
+    "@types/nodemailer": "7.0.12",
+    "@types/pdfkit": "0.17.7",
+    "cross-env": "7.0.3",
+    "tsx": "4.23.15",
+    "typescript": "5.9.3"
+  }
+}

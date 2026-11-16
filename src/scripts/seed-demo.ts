@@ -1,0 +1,157 @@
+import { DateTime } from "luxon";
+import mongoose from "mongoose";
+import {
+  User,
+  Employee,
+  Attendance,
+  Counter,
+  CronConfig,
+} from "../modules/models.js";
+import { localDemo } from "../config/env.js";
+
+export async function seedDemo() {
+  if (!localDemo || (await User.exists({}))) return;
+  const people = [
+    ["Alex Morgan", "Operations", "Operations Manager", "ADMIN"],
+    ["Priya Sharma", "Human Resources", "HR Manager", "HR"],
+    ["Arjun Patel", "Engineering", "Frontend Developer", "EMPLOYEE"],
+    ["Sarah Chen", "Design", "Product Designer", "EMPLOYEE"],
+    ["Rahul Verma", "Engineering", "Backend Developer", "EMPLOYEE"],
+    ["Emily Wilson", "Marketing", "Marketing Lead", "EMPLOYEE"],
+    ["Vikram Singh", "Operations", "Site Supervisor", "EMPLOYEE"],
+    ["Ananya Desai", "Design", "UI Designer", "EMPLOYEE"],
+    ["James Miller", "Sales", "Account Executive", "EMPLOYEE"],
+    ["Neha Gupta", "Human Resources", "HR Associate", "EMPLOYEE"],
+    ["Daniel Lee", "Engineering", "QA Engineer", "EMPLOYEE"],
+    ["Isha Mehta", "Marketing", "Content Strategist", "EMPLOYEE"],
+    ["Rohan Shah", "Operations", "Field Technician", "EMPLOYEE"],
+    ["Sophie Taylor", "Sales", "Sales Associate", "EMPLOYEE"],
+    ["Kabir Khan", "Engineering", "DevOps Engineer", "EMPLOYEE"],
+    ["Maya Thomas", "Design", "Visual Designer", "EMPLOYEE"],
+  ];
+  await mongoose.connection.transaction(async (session) => {
+    const [customer] = await User.create(
+      [
+        {
+          name: "Jordan Ellis",
+          email: "client@sme.test",
+          role: "CUSTOMER",
+          activated: true,
+          demo: true,
+        },
+      ],
+      { session },
+    );
+    const now = DateTime.now().setZone("Asia/Kolkata");
+    for (const [index, person] of people.entries()) {
+      const [name, department, designation, role] = person;
+      const [user] = await User.create(
+        [
+          {
+            name,
+            email: `${name.toLowerCase().replaceAll(" ", ".")}@sme.test`,
+            role,
+            activated: true,
+            demo: true,
+          },
+        ],
+        { session },
+      );
+      const [emp] = await Employee.create(
+        [
+          {
+            userId: user._id,
+            employeeCode: `EMP-${1001 + index}`,
+            fullName: name,
+            email: user.email,
+            phone: `+91 98765 ${String(43210 + index)}`,
+            joiningDate: "2024-01-15",
+            department,
+            designation,
+            payType: index === 12 ? "HOURLY" : "SALARIED",
+            baseSalary: (45000 + index * 2500) * 100,
+            hourlyRate: 35000,
+            assignedClientOrCustomer: index % 2 ? customer._id : null,
+          },
+        ],
+        { session },
+      );
+      for (let day = 0; day < 30; day++) {
+        if (day === 0 && index === 0) continue;
+        const date = now.minus({ days: day }),
+          workDate = date.toISODate()!;
+        const absent = (index + day * 3) % 17 === 0,
+          leave = !absent && (index + day) % 19 === 0;
+        const half = !absent && !leave && (index + day) % 23 === 0;
+        const holiday = day > 0 && date.weekday === 7;
+        const status = holiday
+          ? "HOLIDAY"
+          : absent
+            ? "ABSENT"
+            : leave
+              ? "LEAVE"
+              : half
+                ? "HALF_DAY"
+                : "PRESENT";
+        const working = ["PRESENT", "HALF_DAY"].includes(status);
+        const inTime = working
+          ? date
+              .set({
+                hour: 9,
+                minute: (index % 4) * 7,
+                second: 0,
+                millisecond: 0,
+              })
+              .toJSDate()
+          : null;
+        if (inTime && inTime.getTime() > Date.now()) continue;
+        const plannedOut = date
+          .set({
+            hour: half ? 13 : 18,
+            minute: (index % 3) * 5,
+            second: 0,
+            millisecond: 0,
+          })
+          .toJSDate();
+        const outTime =
+          working &&
+          (day > 0 || (plannedOut.getTime() < Date.now() && index % 5 !== 0))
+            ? plannedOut
+            : null;
+        const ot = Boolean(outTime && !half && index % 5 === 0);
+        await Attendance.create(
+          [
+            {
+              employeeId: emp._id,
+              workDate,
+              status,
+              inTime,
+              outTime,
+              totalHours:
+                outTime && inTime
+                  ? (outTime.getTime() - inTime.getTime()) / 3600000
+                  : 0,
+              regularMinutes: outTime ? (half ? 240 : 480) : 0,
+              regularApproved: Boolean(outTime),
+              isIncomplete: working && !outTime && now.hour >= 20,
+              isOvertime: ot,
+              otAmount: ot ? 50000 : 0,
+              otRemark: ot ? "Additional support for the client release." : "",
+              markedBy: user._id,
+            },
+          ],
+          { session },
+        );
+      }
+    }
+    await Counter.updateOne({ key: "employee" }, { value: 1016 }, { session });
+    await CronConfig.updateOne(
+      {},
+      { adminRecipients: ["admin@sme.test"] },
+      { session },
+    );
+  });
+  console.log(
+    "Local demo workspace initialized. Use Explore local demo on the login screen.",
+  );
+}
