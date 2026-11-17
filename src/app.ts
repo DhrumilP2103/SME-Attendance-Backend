@@ -18,6 +18,12 @@ import { settingsRouter } from "./modules/settings/settings.routes.js";
 
 export const app = express();
 app.disable("x-powered-by");
+app.use((req, _res, next) => {
+  if (req.url.startsWith("/v1")) {
+    req.url = `/api${req.url}`;
+  }
+  next();
+});
 const helmetMiddleware: any = (helmet as any).default || helmet;
 app.use(helmetMiddleware());
 app.use(
