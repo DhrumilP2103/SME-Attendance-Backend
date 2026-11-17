@@ -36,7 +36,6 @@ attendanceRouter.get("/", async (req, res) => {
       limit,
       total: rows.length,
       summary: summarize(rows),
-      departments: [...new Set(rows.map((r) => r.department))],
     },
   });
 });

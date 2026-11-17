@@ -1,5 +1,6 @@
 import { Router } from "express";
 import mongoose from "mongoose";
+import argon2 from "argon2";
 import { z } from "zod";
 import { Employee, User, Counter, AuditLog } from "../models.js";
 import { requirePermission, canSeePay } from "../roles/permissions.js";
@@ -23,8 +24,6 @@ const profile = z
     email: z.string().email().toLowerCase(),
     phone: z.string().max(30).default(""),
     joiningDate: dateSchema,
-    department: text,
-    designation: text,
     payType: z.enum(["SALARIED", "HOURLY"]),
     baseSalary: moneySchema.default(0),
     hourlyRate: moneySchema.default(0),
@@ -77,12 +76,20 @@ employeesRouter.get("/", async (req, res) => {
     .enum(["ACTIVE", "INACTIVE"])
     .optional()
     .parse(req.query.status);
-  const department = z.string().max(120).optional().parse(req.query.department);
+  const accountRole = z
+    .enum(["HR", "EMPLOYEE"])
+    .optional()
+    .parse(req.query.accountRole);
   const adminIds = await User.find({ role: "ADMIN" }).distinct("_id");
+  const roleUserIds = accountRole
+    ? await User.find({ role: accountRole }).distinct("_id")
+    : null;
   const filter = {
-    userId: { $nin: adminIds },
+    userId: {
+      $nin: adminIds,
+      ...(roleUserIds ? { $in: roleUserIds } : {}),
+    },
     ...(status ? { status } : {}),
-    ...(department ? { department } : {}),
     ...(search
       ? {
           $or: [
@@ -94,7 +101,7 @@ employeesRouter.get("/", async (req, res) => {
       : {}),
   };
   const select = canSeePay(req) ? "" : "-baseSalary -hourlyRate";
-  const [data, total, departments] = await Promise.all([
+  const [data, total] = await Promise.all([
     Employee.find(filter)
       .select(select)
       .sort({ fullName: 1, _id: 1 })
@@ -102,9 +109,22 @@ employeesRouter.get("/", async (req, res) => {
       .limit(limit)
       .lean(),
     Employee.countDocuments(filter),
-    Employee.distinct("department", { userId: { $nin: adminIds } }),
   ]);
-  res.json({ data, meta: { page, limit, total, departments } });
+  const accounts = await User.find({
+    _id: { $in: data.map((employee) => employee.userId) },
+  })
+    .select("role")
+    .lean();
+  const roleByUser = new Map(
+    accounts.map((account) => [String(account._id), account.role]),
+  );
+  res.json({
+    data: data.map((employee) => ({
+      ...employee,
+      accountRole: roleByUser.get(String(employee.userId)) ?? "EMPLOYEE",
+    })),
+    meta: { page, limit, total },
+  });
 });
 employeesRouter.get("/customers", async (_req, res) => {
   res.json({ data: [] });
@@ -114,47 +134,49 @@ employeesRouter.post(
   requirePermission("canViewSalaryImpact"),
   async (req, res) => {
     const body = profile
-      .extend({ userId: objectId.optional() })
+      .extend({
+        role: z.enum(["EMPLOYEE", "HR"]).optional(),
+        password: z.string().min(6, "Use at least 6 characters.").max(128).optional(),
+      })
       .parse(req.body);
     payCheck(body);
+    assert(
+      body.role !== "HR" || req.auth!.user.role === "ADMIN",
+      403,
+      "FORBIDDEN",
+      "Only Admin can create HR accounts.",
+    );
+    const passwordHash = body.password
+      ? await argon2.hash(body.password)
+      : undefined;
     const result = await mongoose.connection.transaction(async (session) => {
-      let user = await User.findOne({ email: body.email }).session(session);
-      if (user) {
-        assert(
-          ["EMPLOYEE", "HR"].includes(user.role) &&
-            user.isActive &&
-            (!body.userId || String(user._id) === body.userId),
-          422,
-          "ACCOUNT_LINK",
-          "Only a matching active Employee or HR account can be linked.",
-        );
-        assert(
-          !(await Employee.exists({ userId: user._id }).session(session)),
-          409,
-          "ACCOUNT_LINK",
-          "This account already has an employee profile.",
-        );
-        user.name = body.fullName;
-        await user.save({ session });
-      } else {
-        assert(
-          !body.userId,
-          422,
-          "ACCOUNT_LINK",
-          "No matching account was found.",
-        );
-        [user] = await User.create(
-          [{ name: body.fullName, email: body.email, role: "EMPLOYEE" }],
-          { session },
-        );
-      }
+      assert(
+        !(await User.exists({ email: body.email }).session(session)),
+        409,
+        "ACCOUNT_EXISTS",
+        "An account with this email already exists. Use a different email.",
+      );
+      const [user] = await User.create(
+        [
+          {
+            name: body.fullName,
+            email: body.email,
+            role: body.role ?? "EMPLOYEE",
+            ...(passwordHash ? { passwordHash, activated: true } : {}),
+          },
+        ],
+        { session },
+      );
       const counter = await Counter.findOneAndUpdate(
         { key: "employee" },
         { $inc: { value: 1 } },
         { new: true, session, upsert: true },
       );
+      const record: Record<string, unknown> = { ...body };
+      delete record.password;
+      delete record.role;
       const [employee] = await Employee.create(
-        [{ ...body, userId: user._id, employeeCode: `EMP-${counter!.value}` }],
+        [{ ...record, userId: user._id, employeeCode: `EMP-${counter!.value}` }],
         { session },
       );
       const invitation = user.activated

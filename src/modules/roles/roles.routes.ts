@@ -44,7 +44,7 @@ managementRouter.get("/users", adminOnly, async (req, res) => {
         role: user.role,
         isActive: user.isActive,
         activated: user.activated,
-        customPermissions: user.customPermissions,
+        customPermissions: user.customPermissions ?? {},
         effectivePermissions: await effective(user),
         invitation: delivery,
       };

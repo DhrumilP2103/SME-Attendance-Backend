@@ -62,14 +62,19 @@ settingsRouter.patch("/settings/company", adminOnly, async (req, res) => {
   });
   res.json({ data });
 });
-settingsRouter.get("/settings/eod", adminOnly, async (_req, res) =>
+settingsRouter.get("/settings/eod", adminOnly, async (_req, res) => {
+  const config = await CronConfig.findOne().lean();
   res.json({
     data: {
-      ...(await CronConfig.findOne().lean()),
+      ...config,
+      sections: {
+        attendance: config?.sections?.attendance ?? true,
+        salary: Boolean(config?.sections?.salary),
+      },
       emailDelivery: smtpConfigured ? "SMTP" : "LOCAL_OUTBOX",
     },
-  }),
-);
+  });
+});
 settingsRouter.patch("/settings/eod", adminOnly, async (req, res) => {
   const body = z
     .object({
@@ -85,10 +90,8 @@ settingsRouter.patch("/settings/eod", adminOnly, async (req, res) => {
       adminRecipients: z.array(z.string().email()).min(1).max(20),
       sections: z
         .object({
-          summary: z.boolean(),
-          absent: z.boolean(),
-          incomplete: z.boolean(),
-          overtime: z.boolean(),
+          attendance: z.boolean(),
+          salary: z.boolean(),
         })
         .strict(),
     })

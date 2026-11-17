@@ -13,21 +13,21 @@ import { localDemo } from "../config/env.js";
 export async function seedDemo() {
   if (!localDemo || (await User.exists({}))) return;
   const people = [
-    ["Priya Sharma", "Human Resources", "HR Manager", "HR"],
-    ["Arjun Patel", "Engineering", "Frontend Developer", "EMPLOYEE"],
-    ["Sarah Chen", "Design", "Product Designer", "EMPLOYEE"],
-    ["Rahul Verma", "Engineering", "Backend Developer", "EMPLOYEE"],
-    ["Emily Wilson", "Marketing", "Marketing Lead", "EMPLOYEE"],
-    ["Vikram Singh", "Operations", "Site Supervisor", "EMPLOYEE"],
-    ["Ananya Desai", "Design", "UI Designer", "EMPLOYEE"],
-    ["James Miller", "Sales", "Account Executive", "EMPLOYEE"],
-    ["Neha Gupta", "Human Resources", "HR Associate", "EMPLOYEE"],
-    ["Daniel Lee", "Engineering", "QA Engineer", "EMPLOYEE"],
-    ["Isha Mehta", "Marketing", "Content Strategist", "EMPLOYEE"],
-    ["Rohan Shah", "Operations", "Field Technician", "EMPLOYEE"],
-    ["Sophie Taylor", "Sales", "Sales Associate", "EMPLOYEE"],
-    ["Kabir Khan", "Engineering", "DevOps Engineer", "EMPLOYEE"],
-    ["Maya Thomas", "Design", "Visual Designer", "EMPLOYEE"],
+    ["Priya Sharma", "HR"],
+    ["Arjun Patel", "EMPLOYEE"],
+    ["Sarah Chen", "EMPLOYEE"],
+    ["Rahul Verma", "EMPLOYEE"],
+    ["Emily Wilson", "EMPLOYEE"],
+    ["Vikram Singh", "EMPLOYEE"],
+    ["Ananya Desai", "EMPLOYEE"],
+    ["James Miller", "EMPLOYEE"],
+    ["Neha Gupta", "EMPLOYEE"],
+    ["Daniel Lee", "EMPLOYEE"],
+    ["Isha Mehta", "EMPLOYEE"],
+    ["Rohan Shah", "EMPLOYEE"],
+    ["Sophie Taylor", "EMPLOYEE"],
+    ["Kabir Khan", "EMPLOYEE"],
+    ["Maya Thomas", "EMPLOYEE"],
   ];
   await mongoose.connection.transaction(async (session) => {
     const adminPasswordHash = await argon2.hash("Admin@123");
@@ -47,7 +47,7 @@ export async function seedDemo() {
     );
     const now = DateTime.now().setZone("Asia/Kolkata");
     for (const [index, person] of people.entries()) {
-      const [name, department, designation, role] = person;
+      const [name, role] = person;
       const userEmail = `${name.toLowerCase().replaceAll(" ", ".")}@sme.test`;
       const [user] = await User.create(
         [
@@ -70,8 +70,6 @@ export async function seedDemo() {
             email: user.email,
             phone: `+91 98765 ${String(43210 + index)}`,
             joiningDate: "2024-01-15",
-            department,
-            designation,
             payType: index === 11 ? "HOURLY" : "SALARIED",
             baseSalary: (45000 + index * 2500) * 100,
             hourlyRate: 35000,

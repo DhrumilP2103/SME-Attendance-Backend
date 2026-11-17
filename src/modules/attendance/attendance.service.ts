@@ -15,8 +15,6 @@ export interface AttendanceRow {
   employeeId: string;
   employeeName: string;
   employeeCode: string;
-  department: string;
-  designation: string;
   workDate: string;
   status: string;
   inTime: Date | null;
@@ -59,7 +57,6 @@ export async function attendanceRows(
     today(company.timezone),
   );
   const employeeId = objectId.optional().parse(query.employeeId);
-  const department = z.string().max(120).optional().parse(query.department);
   const status = z
     .enum([...statuses, "UNMARKED", "INCOMPLETE"])
     .optional()
@@ -70,7 +67,6 @@ export async function attendanceRows(
     $and: [
       await employeeScope(req),
       ...(employeeId ? [{ _id: employeeId }] : []),
-      ...(department ? [{ department }] : []),
       ...(match
         ? [
             {
@@ -78,7 +74,6 @@ export async function attendanceRows(
                 { fullName: match },
                 { employeeCode: match },
                 { email: match },
-                { department: match },
               ],
             },
           ]
@@ -118,8 +113,6 @@ export async function attendanceRows(
         employeeName: emp.fullName,
         employeeCode: emp.employeeCode,
         email: emp.email,
-        department: emp.department,
-        designation: emp.designation,
         workDate: start,
         status: "UNMARKED",
         inTime: null,
@@ -141,8 +134,6 @@ export async function attendanceRows(
         employeeName: emp.fullName,
         employeeCode: emp.employeeCode,
         email: emp.email,
-        department: emp.department,
-        designation: emp.designation,
         workDate: row.workDate,
         status: row.status,
         inTime: row.inTime ?? null,

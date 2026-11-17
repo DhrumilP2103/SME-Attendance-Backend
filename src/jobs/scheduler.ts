@@ -5,6 +5,7 @@ import {
   EodRun,
   User,
   Attendance,
+  Employee,
   AuditLog,
 } from "../modules/models.js";
 import {
@@ -12,8 +13,9 @@ import {
   summarize,
 } from "../modules/attendance/attendance.service.js";
 import { defaults } from "../modules/roles/permissions.js";
-import { context, currency, escapeHtml } from "../lib/core.js";
+import { context, currency, escapeHtml, today } from "../lib/core.js";
 import { csv, reportTable } from "../modules/reports/reports.routes.js";
+import { calculatePayroll } from "../modules/payroll/payroll.service.js";
 import { sendMail, processOutbox } from "../lib/email.js";
 import mongoose from "mongoose";
 
@@ -117,38 +119,85 @@ export async function tick() {
       const request = {
         auth: { user: admin, permissions: defaults.ADMIN, sessionId: "worker" },
       } as Express.Request;
+      const company = await context(),
+        month = run.workDate.slice(0, 7);
+      const sections = {
+        attendance: config.sections?.attendance ?? true,
+        salary: Boolean(config.sections?.salary),
+      };
       const rows = await attendanceRows(request, {
-        from: run.workDate,
-        to: run.workDate,
-      });
-      const summary = summarize(rows),
-        company = await context();
-      const section = (title: string, selected: typeof rows) =>
-        `<h2>${title}</h2><table style="width:100%;border-collapse:collapse">${selected.map((r) => `<tr><td style="padding:10px;border-bottom:1px solid #ddd">${escapeHtml(r.employeeName)}</td><td>${escapeHtml(r.department)}</td><td>${escapeHtml(r.status)}</td><td>${r.isOvertime ? `${escapeHtml(currency(r.otAmount || 0, company.currency))} — ${escapeHtml(r.otRemark)}` : ""}</td></tr>`).join("") || "<tr><td>No entries</td></tr>"}</table>`;
-      const html = `<div style="font:14px Arial;max-width:760px;margin:30px auto;color:#203c33"><h1>${escapeHtml(company.name)}</h1><p>Attendance summary · ${run.workDate} · ${escapeHtml(company.timezone)}</p>${config.sections?.summary ? `<h2>${summary.present} present · ${summary.absent} absent · ${summary.unmarked} unmarked</h2><p>${summary.incomplete} incomplete · OT ${escapeHtml(currency(summary.otAmount, company.currency))}</p>` : ""}${
-        config.sections?.absent
-          ? section(
-              "Absent & unmarked",
-              rows.filter((r) =>
-                ["ABSENT", "UNMARKED", "LEAVE"].includes(r.status),
-              ),
-            )
-          : ""
-      }${
-        config.sections?.incomplete
-          ? section(
-              "Incomplete punches",
-              rows.filter((r) => r.isIncomplete),
-            )
-          : ""
-      }${
-        config.sections?.overtime
-          ? section(
-              "Overtime",
-              rows.filter((r) => r.isOvertime),
-            )
-          : ""
-      }</div>`;
+          from: run.workDate,
+          to: run.workDate,
+        }),
+        summary = summarize(rows);
+      const statusText = (status: string) =>
+        status === "HALF_DAY"
+          ? "Half day"
+          : status.charAt(0) + status.slice(1).toLowerCase();
+      const table = (head: string[], body: string[][]) =>
+        `<table style="width:100%;border-collapse:collapse;margin:8px 0 20px"><tr>${head
+          .map(
+            (h) =>
+              `<th align="left" style="padding:8px;border-bottom:2px solid #17664e;font-size:11px;text-transform:uppercase;color:#56706a">${escapeHtml(h)}</th>`,
+          )
+          .join("")}</tr>${body
+          .map(
+            (cells) =>
+              `<tr>${cells.map((c) => `<td style="padding:8px;border-bottom:1px solid #e4ebe7">${c}</td>`).join("")}</tr>`,
+          )
+          .join("") || `<tr><td colspan="${head.length}" style="padding:12px;color:#7b8781">No entries</td></tr>`}</table>`;
+      const attendanceHtml = sections.attendance
+        ? `<h2>Attendance report</h2><p style="color:#56706a">${summary.present} present · ${summary.absent} absent · ${summary.unmarked} unmarked · ${summary.incomplete} incomplete · OT ${escapeHtml(currency(summary.otAmount, company.currency))}</p>${table(
+            ["Employee", "Status", "Hours", "Overtime"],
+            rows.map((r) => [
+              `${escapeHtml(r.employeeName)} <span style="color:#7b8781">${escapeHtml(r.employeeCode)}</span>`,
+              escapeHtml(statusText(r.status)),
+              r.totalHours.toFixed(1),
+              r.isOvertime
+                ? `${escapeHtml(currency(r.otAmount || 0, company.currency))} — ${escapeHtml(r.otRemark)}`
+                : "—",
+            ]),
+          )}`
+        : "";
+      let salaryRows: {
+        name: string;
+        code: string;
+        pay: ReturnType<typeof calculatePayroll>;
+      }[] = [];
+      if (sections.salary) {
+        const employees = await Employee.find({ status: "ACTIVE" })
+          .sort({ fullName: 1 })
+          .lean();
+        const records = await Attendance.find({
+          employeeId: { $in: employees.map((e) => e._id) },
+          workDate: { $gte: `${month}-01`, $lte: `${month}-31` },
+        }).lean();
+        salaryRows = employees.map((employee) => ({
+          name: employee.fullName,
+          code: employee.employeeCode,
+          pay: calculatePayroll(
+            employee,
+            records.filter(
+              (r) => String(r.employeeId) === String(employee._id),
+            ),
+            month,
+            today(config.timezone),
+          ),
+        }));
+      }
+      const salaryHtml = sections.salary
+        ? `<h2>Salary report · ${month} <span style="font-size:11px;color:#8a6d3b;font-weight:400">(estimate)</span></h2><p style="color:#7b8781">Paid-leave, half-day and prorating policies still need business approval.</p>${table(
+            ["Employee", "Base", "Deductions", "Overtime", "Net (estimate)"],
+            salaryRows.map(({ name, code, pay }) => [
+              `${escapeHtml(name)} <span style="color:#7b8781">${escapeHtml(code)}</span>`,
+              escapeHtml(currency(pay.basePay, company.currency)),
+              `−${escapeHtml(currency(pay.deductions, company.currency))}`,
+              `+${escapeHtml(currency(pay.approvedOt, company.currency))}`,
+              `<strong>${escapeHtml(currency(pay.netPayable, company.currency))}</strong>`,
+            ]),
+          )}`
+        : "";
+      const html = `<div style="font:14px Arial;max-width:760px;margin:30px auto;color:#203c33"><h1>${escapeHtml(company.name)}</h1><p style="color:#7b8781">Daily report · ${run.workDate} · ${escapeHtml(company.timezone)}</p>${attendanceHtml}${salaryHtml}</div>`;
       if (
         leaseLost ||
         !(await EodRun.exists({
@@ -158,16 +207,41 @@ export async function tick() {
         }))
       )
         throw new Error("Report lease expired before delivery.");
+      const attachments: { filename: string; content: string }[] = [];
+      if (sections.attendance)
+        attachments.push({
+          filename: `Daily_Attendance_EOD_${run.workDate}.csv`,
+          content: csv(reportTable(rows, company.currency)),
+        });
+      if (sections.salary)
+        attachments.push({
+          filename: `Salary_Estimate_${month}.csv`,
+          content: csv([
+            [
+              "Employee",
+              "Code",
+              "Base pay",
+              "Deductions",
+              "Approved OT",
+              "Net (estimate)",
+              "Currency",
+            ],
+            ...salaryRows.map(({ name, code, pay }) => [
+              name,
+              code,
+              (pay.basePay / 100).toFixed(2),
+              (pay.deductions / 100).toFixed(2),
+              (pay.approvedOt / 100).toFixed(2),
+              (pay.netPayable / 100).toFixed(2),
+              company.currency,
+            ]),
+          ]),
+        });
       const result = await sendMail(
         config.adminRecipients,
-        `[EOD Attendance Report] - ${company.name} - ${run.workDate} (Present: ${summary.present} | Absent: ${summary.absent} | OT: ${currency(summary.otAmount, company.currency)})`,
+        `[EOD Report] - ${company.name} - ${run.workDate}${sections.attendance ? ` (Present: ${summary.present} | Absent: ${summary.absent} | OT: ${currency(summary.otAmount, company.currency)})` : ""}`,
         html,
-        [
-          {
-            filename: `Daily_Attendance_EOD_${run.workDate}.csv`,
-            content: csv(reportTable(rows, company.currency)),
-          },
-        ],
+        attachments,
       );
       await EodRun.updateOne(
         { _id: run._id, status: "RUNNING" },
