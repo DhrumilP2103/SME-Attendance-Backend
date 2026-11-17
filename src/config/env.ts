@@ -90,9 +90,7 @@ export const isAllowedOrigin = (origin?: string | null): boolean => {
     if (
       url.hostname === "localhost" ||
       url.hostname === "127.0.0.1" ||
-      (url.hostname.endsWith(".vercel.app") &&
-        (url.hostname.includes("sme-attendance") ||
-          url.hostname.includes("attendance")))
+      url.hostname.endsWith(".vercel.app")
     ) {
       return true;
     }

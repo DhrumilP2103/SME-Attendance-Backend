@@ -49,7 +49,7 @@ app.use(
     legacyHeaders: false,
   }),
 );
-app.get("/api/v1/health", (_req, res) => res.json({ data: { status: "ok" } }));
+app.get("/api/v1/health", (_req, res) => res.json({ data: { status: "ok", version: "v3-cors" } }));
 app.use("/api/v1", async (_req, _res, next) => {
   try {
     await connectDatabase();

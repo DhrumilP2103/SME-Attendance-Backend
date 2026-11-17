@@ -17,8 +17,14 @@ export function csrfCookie(res: Response) {
 }
 export const csrf: RequestHandler = (req, _res, next) => {
   if (["GET", "HEAD", "OPTIONS"].includes(req.method)) return next();
+  let requestOrigin = req.headers.origin || "";
+  if (!requestOrigin && req.headers.referer) {
+    try {
+      requestOrigin = new URL(req.headers.referer).origin;
+    } catch {}
+  }
   assert(
-    allowedOrigins.has(req.headers.origin || ""),
+    !requestOrigin || allowedOrigins.has(requestOrigin),
     403,
     "CSRF",
     "Untrusted request origin.",
