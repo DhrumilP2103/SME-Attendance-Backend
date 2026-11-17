@@ -9,7 +9,7 @@ const schema = z.object({
     .enum(["development", "test", "production"])
     .default("development"),
   PORT: z.coerce.number().int().min(1).max(65535).default(4000),
-  FRONTEND_ORIGIN: z.string().url().default("http://localhost:3000"),
+  FRONTEND_ORIGIN: z.string().default("http://localhost:3000"),
   MONGODB_URI: z.string().default(""),
   ACCESS_TOKEN_ENCRYPTION_KEY: z.string().default(""),
   OUTBOX_ENCRYPTION_KEY: z.string().default(""),
@@ -71,7 +71,37 @@ export const accessKey = Buffer.from(env.ACCESS_TOKEN_ENCRYPTION_KEY, "hex");
 export const outboxKey = Buffer.from(env.OUTBOX_ENCRYPTION_KEY, "hex");
 export const localDemo =
   !production && env.NODE_ENV !== "test" && env.DEMO_MODE === "true";
-export const allowedOrigins = new Set([
-  env.FRONTEND_ORIGIN,
-  ...(!production ? ["http://localhost:3000", "http://127.0.0.1:3000"] : []),
-]);
+const configuredOrigins = new Set(
+  env.FRONTEND_ORIGIN.split(",")
+    .map((o) => o.trim().replace(/\/$/, ""))
+    .filter(Boolean),
+);
+if (!production) {
+  configuredOrigins.add("http://localhost:3000");
+  configuredOrigins.add("http://127.0.0.1:3000");
+}
+
+export const isAllowedOrigin = (origin?: string | null): boolean => {
+  if (!origin) return true;
+  const normalized = origin.trim().replace(/\/$/, "");
+  if (configuredOrigins.has(normalized)) return true;
+  try {
+    const url = new URL(normalized);
+    if (
+      url.hostname === "localhost" ||
+      url.hostname === "127.0.0.1" ||
+      (url.hostname.endsWith(".vercel.app") &&
+        (url.hostname.includes("sme-attendance") ||
+          url.hostname.includes("attendance")))
+    ) {
+      return true;
+    }
+  } catch {}
+  return false;
+};
+
+export const allowedOrigins = {
+  has(origin: string) {
+    return isAllowedOrigin(origin);
+  },
+};
