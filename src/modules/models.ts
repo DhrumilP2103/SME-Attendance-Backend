@@ -46,6 +46,7 @@ export const User = model<UserRecord>(
         type: String,
         required: true,
         unique: true,
+        sparse: true,
         lowercase: true,
         trim: true,
       },

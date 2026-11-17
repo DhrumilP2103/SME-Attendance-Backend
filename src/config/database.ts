@@ -1,4 +1,9 @@
+import dns from "node:dns";
 import mongoose from "mongoose";
+
+try {
+  dns.setServers(["8.8.8.8", "1.1.1.1"]);
+} catch {}
 import argon2 from "argon2";
 import { env } from "./env.js";
 import {
@@ -48,7 +53,17 @@ export async function connectDatabase() {
 }
 
 export async function initializeDatabase() {
-  for (const model of allModels) await model.createIndexes();
+  for (const model of allModels) {
+    try {
+      await model.createIndexes();
+    } catch (err: any) {
+      if (err?.code === 86) {
+        console.warn(`Index conflict for ${model.modelName}: ${err.message}`);
+      } else {
+        throw err;
+      }
+    }
+  }
   await CompanyConfig.updateOne(
     { key: "company" },
     { $setOnInsert: { name: "Acme Industries", currency: "INR" } },
