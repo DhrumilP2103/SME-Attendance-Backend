@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import { rateLimit } from "express-rate-limit";
 import { allowedOrigins } from "./config/env.js";
+import { connectDatabase } from "./config/database.js";
 import { AppError } from "./lib/core.js";
 import { authenticate, csrf } from "./middleware/authenticate.js";
 import { authRouter } from "./modules/auth/auth.routes.js";
@@ -17,7 +18,8 @@ import { settingsRouter } from "./modules/settings/settings.routes.js";
 
 export const app = express();
 app.disable("x-powered-by");
-app.use(helmet());
+const helmetMiddleware: any = (helmet as any).default || helmet;
+app.use(helmetMiddleware());
 app.use(
   cors({
     origin: (origin, done) => done(null, !origin || allowedOrigins.has(origin)),
@@ -42,6 +44,14 @@ app.use(
   }),
 );
 app.get("/api/v1/health", (_req, res) => res.json({ data: { status: "ok" } }));
+app.use("/api/v1", async (_req, _res, next) => {
+  try {
+    await connectDatabase();
+    next();
+  } catch (error) {
+    next(error);
+  }
+});
 app.use("/api/v1", csrf);
 app.use("/api/v1/auth", authRouter);
 app.use("/api/v1", authenticate);
@@ -122,3 +132,5 @@ const errors: ErrorRequestHandler = (error, req, res, _next) => {
     });
 };
 app.use(errors);
+
+export default app;

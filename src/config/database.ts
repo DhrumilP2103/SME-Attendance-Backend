@@ -13,27 +13,38 @@ import {
 } from "../modules/models.js";
 import { defaults } from "../modules/roles/permissions.js";
 
+let connectPromise: Promise<void> | null = null;
+
 export async function connectDatabase() {
-  const uri = env.MONGODB_URI || "mongodb://127.0.0.1:27017/sme_attendance";
-  try {
-    await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 });
-    // Check if replica set or sharded cluster is present for transactions
-    const hello = await mongoose.connection.db!.admin().command({ hello: 1 });
-    const isReplicaSet = Boolean(hello.setName || hello.msg === "isdbgrid");
-    if (!isReplicaSet) {
-      console.warn(
-        "MongoDB is running in standalone mode (no replica set detected). Multi-document transactions will execute with direct fallback."
-      );
-      mongoose.connection.transaction = async function (fn: any) {
-        return fn(null);
-      };
+  if (mongoose.connection.readyState === 1) return;
+  if (connectPromise) return connectPromise;
+
+  connectPromise = (async () => {
+    const uri = env.MONGODB_URI || "mongodb://127.0.0.1:27017/sme_attendance";
+    try {
+      await mongoose.connect(uri, { serverSelectionTimeoutMS: 10000 });
+      // Check if replica set or sharded cluster is present for transactions
+      const hello = await mongoose.connection.db!.admin().command({ hello: 1 });
+      const isReplicaSet = Boolean(hello.setName || hello.msg === "isdbgrid");
+      if (!isReplicaSet) {
+        console.warn(
+          "MongoDB is running in standalone mode (no replica set detected). Multi-document transactions will execute with direct fallback."
+        );
+        mongoose.connection.transaction = async function (fn: any) {
+          return fn(null);
+        };
+      }
+      console.log(`MongoDB connected: ${mongoose.connection.name}`);
+    } catch (error) {
+      console.error("MongoDB error:", error);
+      await mongoose.disconnect();
+      throw error;
+    } finally {
+      connectPromise = null;
     }
-    console.log(`MongoDB connected: ${mongoose.connection.name}`);
-  } catch (error) {
-    console.error("MongoDB error:", error);
-    await mongoose.disconnect();
-    throw error;
-  }
+  })();
+
+  return connectPromise;
 }
 
 export async function initializeDatabase() {
