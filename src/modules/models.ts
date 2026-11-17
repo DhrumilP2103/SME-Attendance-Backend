@@ -1,6 +1,6 @@
 import { Schema, model, Types } from "mongoose";
 
-export const roles = ["ADMIN", "HR", "EMPLOYEE", "CUSTOMER"] as const;
+export const roles = ["ADMIN", "HR", "EMPLOYEE"] as const;
 export type Role = (typeof roles)[number];
 export const permissionKeys = [
   "canLogin",

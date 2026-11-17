@@ -28,21 +28,12 @@ export const defaults: Record<Role, Permissions> = {
     "canManageEmployees",
   ),
   EMPLOYEE: grants("canLogin", "canTakeSelfAttendance"),
-  CUSTOMER: grants("canLogin", "canGenerateReports", "canExportReports"),
 };
 export function configurable(role: Role, key: Permission) {
   if (role === "ADMIN") return key === "canTakeSelfAttendance";
   if (["canConfigureCronEOD", "canManageRights"].includes(key)) return false;
   if (role === "HR") return true;
-  if (role === "EMPLOYEE")
-    return ["canLogin", "canTakeSelfAttendance"].includes(key);
-  return [
-    "canLogin",
-    "canTakeSelfAttendance",
-    "canMarkTeamAttendance",
-    "canGenerateReports",
-    "canExportReports",
-  ].includes(key);
+  return ["canLogin", "canTakeSelfAttendance"].includes(key);
 }
 export async function effective(user: UserRecord): Promise<Permissions> {
   const policy = await RolePolicy.findOne({ role: user.role }).lean();
@@ -78,7 +69,6 @@ export const adminOnly: RequestHandler = (req, _res, next) => {
 };
 export async function employeeScope(req: Express.Request) {
   const { user, permissions } = req.auth!;
-  if (user.role === "CUSTOMER") return { assignedClientOrCustomer: user._id };
   if (
     user.role === "ADMIN" ||
     (user.role === "HR" && permissions.canViewAllAttendance)
@@ -103,8 +93,7 @@ export async function scopedEmployee(
 export function canSeePay(req: Express.Request, employeeUserId?: unknown) {
   const { user, permissions } = req.auth!;
   return (
-    user.role !== "CUSTOMER" &&
-    (permissions.canViewSalaryImpact ||
-      String(employeeUserId) === String(user._id))
+    permissions.canViewSalaryImpact ||
+    String(employeeUserId) === String(user._id)
   );
 }

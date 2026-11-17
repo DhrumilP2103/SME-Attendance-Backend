@@ -1,5 +1,6 @@
 import { DateTime } from "luxon";
 import mongoose from "mongoose";
+import argon2 from "argon2";
 import {
   User,
   Employee,
@@ -12,7 +13,6 @@ import { localDemo } from "../config/env.js";
 export async function seedDemo() {
   if (!localDemo || (await User.exists({}))) return;
   const people = [
-    ["Alex Morgan", "Operations", "Operations Manager", "ADMIN"],
     ["Priya Sharma", "Human Resources", "HR Manager", "HR"],
     ["Arjun Patel", "Engineering", "Frontend Developer", "EMPLOYEE"],
     ["Sarah Chen", "Design", "Product Designer", "EMPLOYEE"],
@@ -30,12 +30,15 @@ export async function seedDemo() {
     ["Maya Thomas", "Design", "Visual Designer", "EMPLOYEE"],
   ];
   await mongoose.connection.transaction(async (session) => {
-    const [customer] = await User.create(
+    const adminPasswordHash = await argon2.hash("Admin@123");
+    await User.create(
       [
         {
-          name: "Jordan Ellis",
-          email: "client@sme.test",
-          role: "CUSTOMER",
+          name: "System Admin",
+          email: "admin@gmail.com",
+          passwordHash: adminPasswordHash,
+          role: "ADMIN",
+          isActive: true,
           activated: true,
           demo: true,
         },
@@ -45,11 +48,12 @@ export async function seedDemo() {
     const now = DateTime.now().setZone("Asia/Kolkata");
     for (const [index, person] of people.entries()) {
       const [name, department, designation, role] = person;
+      const userEmail = `${name.toLowerCase().replaceAll(" ", ".")}@sme.test`;
       const [user] = await User.create(
         [
           {
             name,
-            email: `${name.toLowerCase().replaceAll(" ", ".")}@sme.test`,
+            email: userEmail,
             role,
             activated: true,
             demo: true,
@@ -68,10 +72,10 @@ export async function seedDemo() {
             joiningDate: "2024-01-15",
             department,
             designation,
-            payType: index === 12 ? "HOURLY" : "SALARIED",
+            payType: index === 11 ? "HOURLY" : "SALARIED",
             baseSalary: (45000 + index * 2500) * 100,
             hourlyRate: 35000,
-            assignedClientOrCustomer: index % 2 ? customer._id : null,
+            assignedClientOrCustomer: null,
           },
         ],
         { session },
@@ -147,7 +151,7 @@ export async function seedDemo() {
     await Counter.updateOne({ key: "employee" }, { value: 1016 }, { session });
     await CronConfig.updateOne(
       {},
-      { adminRecipients: ["admin@sme.test"] },
+      { adminRecipients: ["admin@gmail.com"] },
       { session },
     );
   });

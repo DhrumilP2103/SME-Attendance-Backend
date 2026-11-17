@@ -70,15 +70,6 @@ function payCheck(body: {
     "Enter a positive hourly rate.",
   );
 }
-async function checkCustomer(id?: string | null) {
-  if (id)
-    assert(
-      await User.exists({ _id: id, role: "CUSTOMER", isActive: true }),
-      422,
-      "CUSTOMER",
-      "Choose an active customer account.",
-    );
-}
 employeesRouter.get("/", async (req, res) => {
   const { page, limit } = pagination(req.query);
   const search = z.string().max(100).optional().parse(req.query.search);
@@ -87,7 +78,9 @@ employeesRouter.get("/", async (req, res) => {
     .optional()
     .parse(req.query.status);
   const department = z.string().max(120).optional().parse(req.query.department);
+  const adminIds = await User.find({ role: "ADMIN" }).distinct("_id");
   const filter = {
+    userId: { $nin: adminIds },
     ...(status ? { status } : {}),
     ...(department ? { department } : {}),
     ...(search
@@ -109,16 +102,12 @@ employeesRouter.get("/", async (req, res) => {
       .limit(limit)
       .lean(),
     Employee.countDocuments(filter),
-    Employee.distinct("department"),
+    Employee.distinct("department", { userId: { $nin: adminIds } }),
   ]);
   res.json({ data, meta: { page, limit, total, departments } });
 });
 employeesRouter.get("/customers", async (_req, res) => {
-  const data = await User.find({ role: "CUSTOMER", isActive: true })
-    .select("_id name")
-    .sort({ name: 1 })
-    .lean();
-  res.json({ data });
+  res.json({ data: [] });
 });
 employeesRouter.post(
   "/",
@@ -128,17 +117,16 @@ employeesRouter.post(
       .extend({ userId: objectId.optional() })
       .parse(req.body);
     payCheck(body);
-    await checkCustomer(body.assignedClientOrCustomer);
     const result = await mongoose.connection.transaction(async (session) => {
       let user = await User.findOne({ email: body.email }).session(session);
       if (user) {
         assert(
-          user.role === "EMPLOYEE" &&
+          ["EMPLOYEE", "HR"].includes(user.role) &&
             user.isActive &&
             (!body.userId || String(user._id) === body.userId),
           422,
           "ACCOUNT_LINK",
-          "Only a matching active Employee account can be linked.",
+          "Only a matching active Employee or HR account can be linked.",
         );
         assert(
           !(await Employee.exists({ userId: user._id }).session(session)),
@@ -225,7 +213,6 @@ employeesRouter.patch("/:id", async (req, res) => {
       "FORBIDDEN",
       "Salary authorization is required.",
     );
-  await checkCustomer(body.assignedClientOrCustomer);
   const result = await mongoose.connection.transaction(async (session) => {
     const old = await Employee.findById(id).session(session);
     assert(old, 404, "NOT_FOUND", "Employee not found.");

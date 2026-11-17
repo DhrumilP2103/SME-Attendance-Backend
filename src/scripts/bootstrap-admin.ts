@@ -1,41 +1,52 @@
 import mongoose from "mongoose";
+import argon2 from "argon2";
 import { z } from "zod";
 import {
   connectDatabase,
   initializeDatabase,
   disconnectDatabase,
 } from "../config/database.js";
-import { User, Counter } from "../modules/models.js";
-import { queueAccountEmail, processOutbox } from "../lib/email.js";
-import { assert } from "../lib/core.js";
+import { User, Employee, Counter } from "../modules/models.js";
 
-const email = z.string().email().parse(process.env.ADMIN_EMAIL);
-const name = z
-  .string()
-  .min(1)
-  .max(120)
-  .parse(process.env.ADMIN_NAME || "Workspace Admin");
+const email = (process.env.ADMIN_EMAIL || "admin@gmail.com").toLowerCase();
+const name = process.env.ADMIN_NAME || "System Admin";
+const password = process.env.ADMIN_PASSWORD || "Admin@123";
+
 await connectDatabase();
 await initializeDatabase();
+
+const passwordHash = await argon2.hash(password);
 await mongoose.connection.transaction(async (session) => {
   await Counter.updateOne(
     { key: "admin-safety" },
     { $inc: { value: 1 } },
     { session },
   );
-  assert(
-    !(await User.exists({ role: "ADMIN" }).session(session)),
-    409,
-    "ADMIN_EXISTS",
-    "An Admin already exists. Use the invitation workflow.",
-  );
-  const [user] = await User.create([{ name, email, role: "ADMIN" }], {
-    session,
-  });
-  await queueAccountEmail(user, "INVITE", session);
+  const existing = await User.findOne({ email }).session(session);
+  if (existing) {
+    existing.name = name;
+    existing.passwordHash = passwordHash;
+    existing.role = "ADMIN";
+    existing.isActive = true;
+    existing.activated = true;
+    await existing.save({ session });
+  } else {
+    await User.create(
+      [
+        {
+          name,
+          email,
+          passwordHash,
+          role: "ADMIN",
+          isActive: true,
+          activated: true,
+        },
+      ],
+      { session },
+    );
+  }
+  await Employee.deleteMany({ email }).session(session);
 });
-await processOutbox();
-console.log(
-  "Admin invitation prepared. Check your mailbox, or .local/mail when SMTP is not configured.",
-);
+
+console.log(`Admin account configured successfully: ${email} / ${password}`);
 await disconnectDatabase();

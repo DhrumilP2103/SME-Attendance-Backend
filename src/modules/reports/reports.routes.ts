@@ -163,12 +163,6 @@ reportsRouter.get(
   },
 );
 reportsRouter.get("/payroll/monthly", async (req, res) => {
-  assert(
-    req.auth!.user.role !== "CUSTOMER",
-    403,
-    "FORBIDDEN",
-    "Salary reports are not available to Customers.",
-  );
   const month = monthSchema.parse(req.query.month),
     employeeId = objectId.optional().parse(req.query.employeeId);
   const department = z.string().max(120).optional().parse(req.query.department);
