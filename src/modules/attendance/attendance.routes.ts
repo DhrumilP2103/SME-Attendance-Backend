@@ -408,6 +408,59 @@ attendanceRouter.put(
     res.json({ data: updated });
   },
 );
+attendanceRouter.delete(
+  "/:employeeId/:workDate",
+  requirePermission("canMarkTeamAttendance"),
+  async (req, res) => {
+    const employee = await scopedEmployee(
+      req,
+      objectId.parse(req.params.employeeId),
+      true,
+    );
+    const workDate = dateSchema.parse(req.params.workDate);
+    const zone = (await context()).timezone;
+    assert(
+      workDate <= today(zone) && workDate >= employee.joiningDate,
+      422,
+      "WORK_DATE",
+      "Use a date between joining and today.",
+    );
+    const version = z.coerce
+      .number()
+      .int()
+      .min(0)
+      .optional()
+      .parse(req.query.version);
+    const data = await mongoose.connection.transaction(async (session) => {
+      const old = await Attendance.findOne({
+        employeeId: employee._id,
+        workDate,
+      }).session(session);
+      assert(old, 404, "NOT_FOUND", "Attendance not found.");
+      assert(
+        version === undefined || old.version === version,
+        409,
+        "EDIT_CONFLICT",
+        "Attendance was changed by someone else. Reload and try again.",
+      );
+      await Attendance.deleteOne({ _id: old._id }, { session });
+      await AuditLog.create(
+        [
+          {
+            actorId: req.auth!.user._id,
+            action: "ATTENDANCE_CLEARED",
+            entityId: String(old._id),
+            before: old.toObject(),
+            reason: "Attendance mark cleared from the register.",
+          },
+        ],
+        { session },
+      );
+      return { employeeId: String(employee._id), workDate };
+    });
+    res.json({ data });
+  },
+);
 attendanceRouter.get(
   "/:employeeId/:workDate/audit",
   requirePermission("canMarkTeamAttendance"),
