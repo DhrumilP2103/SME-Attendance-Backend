@@ -12,6 +12,7 @@ import {
 import {
   requirePermission,
   scopedEmployee,
+  employeeScope,
   canSeePay,
 } from "../roles/permissions.js";
 import {
@@ -20,6 +21,7 @@ import {
   dateSchema,
   moneySchema,
   pagination,
+  dateRange,
   context,
   today,
 } from "../../lib/core.js";
@@ -39,6 +41,41 @@ attendanceRouter.get("/", async (req, res) => {
     },
   });
 });
+attendanceRouter.get(
+  "/missing-hours",
+  requirePermission("canMarkTeamAttendance"),
+  async (req, res) => {
+    const zone = (await context()).timezone;
+    const { start, end } = dateRange(req.query.from, req.query.to, today(zone));
+    const employees = await Employee.find({
+      $and: [
+        await employeeScope(req),
+        { payType: "HOURLY", joiningDate: { $lte: end } },
+      ],
+    })
+      .select("fullName employeeCode")
+      .lean();
+    const records = employees.length
+      ? await Attendance.find({
+          employeeId: { $in: employees.map((employee) => employee._id) },
+          workDate: { $gte: start, $lte: end },
+          status: "PRESENT",
+          regularMinutes: { $lte: 0 },
+        })
+          .sort({ workDate: -1, _id: 1 })
+          .limit(200)
+          .lean()
+      : [];
+    const byId = new Map(employees.map((e) => [String(e._id), e]));
+    const data = records.map((row) => ({
+      employeeId: String(row.employeeId),
+      employeeName: byId.get(String(row.employeeId))?.fullName || "Employee",
+      employeeCode: byId.get(String(row.employeeId))?.employeeCode || "",
+      workDate: row.workDate,
+    }));
+    res.json({ data: { count: data.length, rows: data } });
+  },
+);
 for (const action of ["check-in", "check-out"] as const) {
   attendanceRouter.post(
     `/${action}`,
@@ -302,15 +339,15 @@ attendanceRouter.put(
         "Overtime requires a working status, positive amount, and a remark.",
       );
       const regularMinutes = body.regularMinutes ?? old?.regularMinutes ?? 0;
+      const standardMinutes = (employee.shift?.standardDailyHours || 8) * 60;
       assert(
         regularMinutes === 0 ||
-          (inTime &&
-            outTime &&
-            regularMinutes <= totalMinutes &&
-            regularMinutes <= (employee.shift?.standardDailyHours || 8) * 60),
+          (regularMinutes <= standardMinutes &&
+            (employee.payType === "HOURLY" ||
+              (inTime && outTime && regularMinutes <= totalMinutes))),
         422,
         "REGULAR_HOURS",
-        "Approved regular time must fit completed punches and the standard shift.",
+        "Approved regular time must fit the standard shift and completed punches.",
       );
       const value = {
         status: body.status,
@@ -323,7 +360,10 @@ attendanceRouter.put(
         isOvertime,
         otAmount,
         otRemark,
-        isIncomplete: Boolean(inTime && !outTime),
+        // Approved hours complete an hourly day even when the checkout punch is missing.
+        isIncomplete:
+          Boolean(inTime && !outTime) &&
+          !(employee.payType === "HOURLY" && regularMinutes > 0),
         modificationReason: body.modificationReason || "",
         lastModifiedBy: req.auth!.user._id,
         ...(body.regularMinutes !== undefined || otSupplied

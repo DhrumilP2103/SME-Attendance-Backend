@@ -2,7 +2,16 @@ import { Router } from "express";
 import mongoose from "mongoose";
 import argon2 from "argon2";
 import { z } from "zod";
-import { Employee, User, Counter, AuditLog } from "../models.js";
+import {
+  Employee,
+  User,
+  Counter,
+  AuditLog,
+  Attendance,
+  Session,
+  AccountToken,
+  EmailOutbox,
+} from "../models.js";
 import { requirePermission, canSeePay } from "../roles/permissions.js";
 import {
   assert,
@@ -135,8 +144,13 @@ employeesRouter.post(
   async (req, res) => {
     const body = profile
       .extend({
+        email: profile.shape.email.optional().or(z.literal("")),
         role: z.enum(["EMPLOYEE", "HR"]).optional(),
-        password: z.string().min(6, "Use at least 6 characters.").max(128).optional(),
+        password: z
+          .string()
+          .min(6, "Use at least 6 characters.")
+          .max(128)
+          .optional(),
       })
       .parse(req.body);
     payCheck(body);
@@ -146,12 +160,25 @@ employeesRouter.post(
       "FORBIDDEN",
       "Only Admin can create HR accounts.",
     );
+    const email = (body.email || "").trim();
+    assert(
+      !body.password || email,
+      422,
+      "EMAIL_REQUIRED",
+      "Add an email address so this account can sign in.",
+    );
     const passwordHash = body.password
       ? await argon2.hash(body.password)
       : undefined;
     const result = await mongoose.connection.transaction(async (session) => {
+      const counter = await Counter.findOneAndUpdate(
+        { key: "employee" },
+        { $inc: { value: 1 } },
+        { new: true, session, upsert: true },
+      );
+      const accountEmail = email || `emp-${counter!.value}@no-email.invalid`;
       assert(
-        !(await User.exists({ email: body.email }).session(session)),
+        !(await User.exists({ email: accountEmail }).session(session)),
         409,
         "ACCOUNT_EXISTS",
         "An account with this email already exists. Use a different email.",
@@ -160,28 +187,30 @@ employeesRouter.post(
         [
           {
             name: body.fullName,
-            email: body.email,
+            email: accountEmail,
             role: body.role ?? "EMPLOYEE",
             ...(passwordHash ? { passwordHash, activated: true } : {}),
           },
         ],
         { session },
       );
-      const counter = await Counter.findOneAndUpdate(
-        { key: "employee" },
-        { $inc: { value: 1 } },
-        { new: true, session, upsert: true },
-      );
-      const record: Record<string, unknown> = { ...body };
+      const record: Record<string, unknown> = { ...body, email };
       delete record.password;
       delete record.role;
       const [employee] = await Employee.create(
-        [{ ...record, userId: user._id, employeeCode: `EMP-${counter!.value}` }],
+        [
+          {
+            ...record,
+            userId: user._id,
+            employeeCode: `EMP-${counter!.value}`,
+          },
+        ],
         { session },
       );
-      const invitation = user.activated
-        ? null
-        : await queueAccountEmail(user, "INVITE", session);
+      const invitation =
+        !user.activated && email
+          ? await queueAccountEmail(user, "INVITE", session)
+          : null;
       await AuditLog.create(
         [
           {
@@ -210,6 +239,7 @@ employeesRouter.patch("/:id", async (req, res) => {
   const body = profile
     .omit({ email: true })
     .extend({
+      email: profile.shape.email.optional(),
       phone: profile.shape.phone.removeDefault(),
       baseSalary: profile.shape.baseSalary.removeDefault(),
       hourlyRate: profile.shape.hourlyRate.removeDefault(),
@@ -240,6 +270,16 @@ employeesRouter.patch("/:id", async (req, res) => {
     assert(old, 404, "NOT_FOUND", "Employee not found.");
     payCheck({ ...old.toObject(), ...body });
     const { version, ...changes } = body;
+    if (changes.email && changes.email !== old.email)
+      assert(
+        !(await User.exists({
+          email: changes.email,
+          _id: { $ne: old.userId },
+        }).session(session)),
+        409,
+        "ACCOUNT_EXISTS",
+        "An account with this email already exists. Use a different email.",
+      );
     const employee = await Employee.findOneAndUpdate(
       { _id: id, version },
       { $set: changes, $inc: { version: 1 } },
@@ -251,12 +291,23 @@ employeesRouter.patch("/:id", async (req, res) => {
       "EDIT_CONFLICT",
       "This record changed. Reload and try again.",
     );
-    if (body.fullName)
+    if (body.fullName || body.email)
       await User.updateOne(
         { _id: old.userId },
-        { name: body.fullName },
+        {
+          $set: {
+            ...(body.fullName ? { name: body.fullName } : {}),
+            ...(body.email ? { email: body.email } : {}),
+          },
+        },
         { session },
       );
+    // A sign-in email added or changed on an unactivated account needs a fresh activation link.
+    if (body.email && body.email !== old.email) {
+      const account = await User.findById(old.userId).session(session);
+      if (account?.isActive && !account.activated)
+        await queueAccountEmail(account, "INVITE", session);
+    }
     await AuditLog.create(
       [
         {
@@ -277,4 +328,63 @@ employeesRouter.patch("/:id", async (req, res) => {
     delete output.hourlyRate;
   }
   res.json({ data: output });
+});
+employeesRouter.delete("/:id", async (req, res) => {
+  const id = objectId.parse(req.params.id);
+  const data = await mongoose.connection.transaction(async (session) => {
+    const employee = await Employee.findById(id).session(session);
+    assert(employee, 404, "NOT_FOUND", "Employee not found.");
+    assert(
+      String(employee.userId) !== String(req.auth!.user._id),
+      422,
+      "SELF_DELETE",
+      "You cannot delete your own account.",
+    );
+    const account = await User.findById(employee.userId).session(session);
+    assert(
+      account?.role !== "ADMIN",
+      422,
+      "ADMIN_PROTECTED",
+      "Admin accounts cannot be deleted from the employee directory.",
+    );
+    const attendance = await Attendance.find({ employeeId: employee._id })
+      .select("_id")
+      .session(session)
+      .lean();
+    await Attendance.deleteMany({ employeeId: employee._id }, { session });
+    await Session.deleteMany({ userId: employee.userId }, { session });
+    await AccountToken.deleteMany({ userId: employee.userId }, { session });
+    if (account?.email)
+      await EmailOutbox.deleteMany({ recipient: account.email }, { session });
+    await Employee.deleteOne({ _id: employee._id }, { session });
+    await User.deleteOne({ _id: employee.userId }, { session });
+    await AuditLog.deleteMany(
+      {
+        entityId: {
+          $in: [
+            String(employee._id),
+            String(employee.userId),
+            ...attendance.map((row) => String(row._id)),
+          ],
+        },
+      },
+      { session },
+    );
+    await AuditLog.create(
+      [
+        {
+          actorId: req.auth!.user._id,
+          action: "EMPLOYEE_DELETED",
+          entityId: String(employee._id),
+          before: {
+            employeeCode: employee.employeeCode,
+            fullName: employee.fullName,
+          },
+        },
+      ],
+      { session },
+    );
+    return { id: String(employee._id), employeeCode: employee.employeeCode };
+  });
+  res.json({ data });
 });

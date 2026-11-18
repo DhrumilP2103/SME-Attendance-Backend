@@ -28,6 +28,8 @@ export interface AttendanceRow {
   otRemark?: string;
   version: number;
   shiftStart: string;
+  payType: string;
+  standardDailyHours: number;
   email: string;
 }
 export function summarize(rows: AttendanceRow[]) {
@@ -124,6 +126,8 @@ export async function attendanceRows(
         isOvertime: false,
         version: 0,
         shiftStart: emp.shift?.startTime || "09:00",
+        payType: emp.payType,
+        standardDailyHours: emp.shift?.standardDailyHours || 8,
         ...(canSeePay(req, emp.userId) ? { otAmount: 0, otRemark: "" } : {}),
       });
     }
@@ -145,6 +149,8 @@ export async function attendanceRows(
         isOvertime: row.isOvertime,
         version: row.version,
         shiftStart: emp.shift?.startTime || "09:00",
+        payType: emp.payType,
+        standardDailyHours: emp.shift?.standardDailyHours || 8,
         ...(canSeePay(req, emp.userId)
           ? { otAmount: row.otAmount, otRemark: row.otRemark }
           : {}),

@@ -108,7 +108,7 @@ export const Employee = model(
       userId: { ...ref("User"), unique: true, required: true },
       employeeCode: { type: String, unique: true, required: true },
       fullName: { type: String, required: true },
-      email: { type: String, required: true },
+      email: { type: String, default: "" },
       phone: { type: String, default: "" },
       joiningDate: { type: String, required: true },
       profilePhotoUrl: { type: String, default: "" },
