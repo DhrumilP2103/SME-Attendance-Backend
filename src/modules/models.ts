@@ -160,6 +160,7 @@ const attendanceSchema = new Schema(
     regularApproved: { type: Boolean, default: false },
     isIncomplete: { type: Boolean, default: false },
     isOvertime: { type: Boolean, default: false },
+    otHours: { type: Number, default: 0 },
     otAmount: money,
     otRemark: { type: String, default: "" },
     markedBy: ref("User"),

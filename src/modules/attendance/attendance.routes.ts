@@ -216,6 +216,7 @@ const registerSchema = z
     outTime: z.string().datetime().nullable().optional(),
     regularMinutes: z.number().int().min(0).max(1440).optional(),
     isOvertime: z.boolean().optional(),
+    otHours: z.number().min(0).max(24).optional(),
     otAmount: moneySchema.optional(),
     otRemark: z.string().trim().max(1000).optional(),
     modificationReason: z.string().trim().max(1000).optional(),
@@ -246,7 +247,7 @@ attendanceRouter.put(
       "INACTIVE_EMPLOYEE",
       "Reactivate this employee before changing attendance.",
     );
-    const otSupplied = ["isOvertime", "otAmount", "otRemark"].some(
+    const otSupplied = ["isOvertime", "otHours", "otAmount", "otRemark"].some(
       (k) => k in body,
     );
     assert(
@@ -330,6 +331,7 @@ attendanceRouter.put(
         "Clear punches and regular hours before marking a non-working status.",
       );
       const isOvertime = body.isOvertime ?? old?.isOvertime ?? false;
+      const otHours = isOvertime ? (body.otHours ?? old?.otHours ?? 0) : 0;
       const otAmount = isOvertime ? (body.otAmount ?? old?.otAmount ?? 0) : 0;
       const otRemark = isOvertime ? (body.otRemark ?? old?.otRemark ?? "") : "";
       assert(
@@ -358,6 +360,7 @@ attendanceRouter.put(
         regularApproved:
           body.regularMinutes !== undefined || old?.regularApproved || false,
         isOvertime,
+        otHours,
         otAmount,
         otRemark,
         // Approved hours complete an hourly day even when the checkout punch is missing.

@@ -24,6 +24,7 @@ export interface AttendanceRow {
   regularApproved: boolean;
   isIncomplete: boolean;
   isOvertime: boolean;
+  otHours?: number;
   otAmount?: number;
   otRemark?: string;
   version: number;
@@ -51,13 +52,16 @@ export function summarize(rows: AttendanceRow[]) {
 export async function attendanceRows(
   req: Express.Request,
   query: Record<string, unknown>,
+  includeUnmarkedEmployees = false,
 ): Promise<AttendanceRow[]> {
   const company = await context();
+  const currentDate = today(company.timezone);
   const { start, end } = dateRange(
     query.from,
     query.to,
-    today(company.timezone),
+    currentDate,
   );
+  const rosterDate = includeUnmarkedEmployees && end > currentDate ? currentDate : end;
   const employeeId = objectId.optional().parse(query.employeeId);
   const status = z
     .enum([...statuses, "UNMARKED", "INCOMPLETE"])
@@ -105,9 +109,10 @@ export async function attendanceRows(
     );
     if (
       !ownRecords.length &&
-      start === end &&
+      (start === end || includeUnmarkedEmployees) &&
       emp.status === "ACTIVE" &&
-      emp.joiningDate <= start
+      emp.joiningDate <= rosterDate &&
+      start <= rosterDate
     ) {
       result.push({
         id: null,
@@ -115,7 +120,7 @@ export async function attendanceRows(
         employeeName: emp.fullName,
         employeeCode: emp.employeeCode,
         email: emp.email,
-        workDate: start,
+        workDate: end,
         status: "UNMARKED",
         inTime: null,
         outTime: null,
@@ -128,7 +133,9 @@ export async function attendanceRows(
         shiftStart: emp.shift?.startTime || "09:00",
         payType: emp.payType,
         standardDailyHours: emp.shift?.standardDailyHours || 8,
-        ...(canSeePay(req, emp.userId) ? { otAmount: 0, otRemark: "" } : {}),
+        ...(canSeePay(req, emp.userId)
+          ? { otHours: 0, otAmount: 0, otRemark: "" }
+          : {}),
       });
     }
     for (const row of ownRecords)
@@ -152,7 +159,11 @@ export async function attendanceRows(
         payType: emp.payType,
         standardDailyHours: emp.shift?.standardDailyHours || 8,
         ...(canSeePay(req, emp.userId)
-          ? { otAmount: row.otAmount, otRemark: row.otRemark }
+          ? {
+              otHours: row.otHours || 0,
+              otAmount: row.otAmount,
+              otRemark: row.otRemark,
+            }
           : {}),
       });
   }

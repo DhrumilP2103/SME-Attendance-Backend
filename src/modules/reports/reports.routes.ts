@@ -8,6 +8,7 @@ import {
   assert,
   context,
   today,
+  dateRange,
   pagination,
   monthSchema,
   objectId,
@@ -23,6 +24,12 @@ import {
   summarize,
   type AttendanceRow,
 } from "../attendance/attendance.service.js";
+import {
+  attendancePdf,
+  attendanceRegister,
+  attendanceWorkbook,
+  groupAttendance,
+} from "./attendance-register.js";
 import { calculatePayroll } from "../payroll/payroll.service.js";
 
 export const reportsRouter = Router();
@@ -84,29 +91,18 @@ reportsRouter.get("/reports/attendance", async (req, res) => {
             "000000000000000000000000",
         ),
       };
-  const rows = await attendanceRows(req, query),
+  const register = req.query.view === "register";
+  const rows = await attendanceRows(req, query, register),
     { page, limit } = pagination(req.query);
+  const data = register ? groupAttendance(rows) : rows;
+  const summaryRows = register && req.query.from !== req.query.to
+    ? rows.filter((row) => row.id)
+    : rows;
   res.json({
-    data: rows.slice((page - 1) * limit, page * limit),
-    meta: { page, limit, total: rows.length, summary: summarize(rows) },
+    data: data.slice((page - 1) * limit, page * limit),
+    meta: { page, limit, total: data.length, summary: summarize(summaryRows) },
   });
 });
-function statusLabel(status: string) {
-  return status === "HALF_DAY"
-    ? "Half day"
-    : status.charAt(0) + status.slice(1).toLowerCase();
-}
-function statusColor(status: string) {
-  const map: Record<string, string> = {
-    PRESENT: "#17664e",
-    ABSENT: "#b04a3f",
-    HALF_DAY: "#b07d2b",
-    LEAVE: "#3c6f9e",
-    HOLIDAY: "#6b5b95",
-    UNMARKED: "#8b958f",
-  };
-  return map[status] || "#26312b";
-}
 function moneyText(value: number, code: string) {
   const digits =
     new Intl.NumberFormat("en", { style: "currency", currency: code })
@@ -126,158 +122,26 @@ reportsRouter.get(
       "FORBIDDEN",
       "Report generation permission is required.",
     );
-    const format = z.enum(["csv", "xlsx", "pdf"]).parse(req.query.format);
-    const rows = await attendanceRows(req, req.query),
-      company = await context();
-    const table = reportTable(rows, company.currency);
-    res.attachment(`Attendance_${today(company.timezone)}.${format}`);
-    if (format === "csv") {
-      res.type("text/csv").send(csv(table));
-      return;
-    }
+    const format = z.enum(["xlsx", "pdf"]).parse(req.query.format);
+    const company = await context();
+    const { start, end } = dateRange(
+      req.query.from,
+      req.query.to,
+      today(company.timezone),
+    );
+    const rows = await attendanceRows(req, { ...req.query, from: start, to: end }, true);
+    const register = attendanceRegister(rows, start, end);
+    const filename = `Attendance_${start}_${end}.${format}`;
     if (format === "xlsx") {
-      const workbook = new ExcelJS.Workbook();
-      const sheet = workbook.addWorksheet("Attendance");
-      table.forEach((row) => sheet.addRow(row.map(safeCell)));
-      sheet.getRow(1).font = { bold: true, color: { argb: "FFFFFFFF" } };
-      sheet.getRow(1).fill = {
-        type: "pattern",
-        pattern: "solid",
-        fgColor: { argb: "FF17664E" },
-      };
-      sheet.columns.forEach((column) => {
-        column.width = 24;
-      });
-      sheet.views = [{ state: "frozen", ySplit: 1 }];
-      res
-        .type(
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
-        .send(Buffer.from(await workbook.xlsx.writeBuffer()));
+      const workbook = await attendanceWorkbook(register);
+      res.attachment(filename)
+        .type("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        .send(workbook);
       return;
     }
-    const doc = new PDFDocument({ margin: 40, size: "A4", bufferPages: true });
-    res.type("application/pdf");
+    const doc = attendancePdf(register, company.name);
+    res.attachment(filename).type("application/pdf");
     doc.pipe(res);
-    const contentWidth = doc.page.width - 80;
-    const withPay = rows.some((r) => r.otAmount !== undefined);
-    const columns = withPay
-      ? [
-          { label: "Employee", x: 40, width: 130, align: "left" as const },
-          { label: "Code", x: 175, width: 62, align: "left" as const },
-          { label: "Date", x: 242, width: 68, align: "left" as const },
-          { label: "Status", x: 315, width: 62, align: "left" as const },
-          { label: "Hours", x: 382, width: 42, align: "right" as const },
-          {
-            label: `OT (${company.currency})`,
-            x: 429,
-            width: 126,
-            align: "right" as const,
-          },
-        ]
-      : [
-          { label: "Employee", x: 40, width: 160, align: "left" as const },
-          { label: "Code", x: 205, width: 70, align: "left" as const },
-          { label: "Date", x: 280, width: 85, align: "left" as const },
-          { label: "Status", x: 370, width: 80, align: "left" as const },
-          { label: "Hours", x: 455, width: 100, align: "right" as const },
-        ];
-    const rowHeight = 22;
-    doc.rect(0, 0, doc.page.width, 96).fill("#17664e");
-    doc
-      .fillColor("#ffffff")
-      .fontSize(18)
-      .text(company.name, 40, 32, { width: contentWidth });
-    doc.fontSize(10).fillColor("#cfe4da").text("Attendance report", 40, 58);
-    const span = rows.length
-      ? `${rows[rows.length - 1].workDate} to ${rows[0].workDate}`
-      : "No records";
-    doc
-      .fontSize(9)
-      .fillColor("#5c6661")
-      .text(
-        `${rows.length} record${rows.length === 1 ? "" : "s"} · ${span} · Times in ${company.timezone}`,
-        40,
-        112,
-        { width: contentWidth },
-      );
-    let y = 140;
-    const drawHeader = () => {
-      doc.rect(40, y, contentWidth, rowHeight).fill("#eef5f1");
-      columns.forEach((c) => {
-        doc
-          .font("Helvetica-Bold")
-          .fontSize(8)
-          .fillColor("#3f4b45")
-          .text(c.label.toUpperCase(), c.x + 4, y + 7, {
-            width: c.width - 8,
-            align: c.align,
-            lineBreak: false,
-          });
-      });
-      doc.font("Helvetica");
-      y += rowHeight;
-    };
-    drawHeader();
-    rows.forEach((row, index) => {
-      if (y + rowHeight > 760) {
-        doc.addPage();
-        y = 40;
-        drawHeader();
-      }
-      if (index % 2) doc.rect(40, y, contentWidth, rowHeight).fill("#f9fbfa");
-      const cells = withPay
-        ? [
-            row.employeeName,
-            row.employeeCode,
-            row.workDate,
-            statusLabel(row.status),
-            row.totalHours.toFixed(1),
-            row.otAmount !== undefined
-              ? moneyText(row.otAmount, company.currency)
-              : "—",
-          ]
-        : [
-            row.employeeName,
-            row.employeeCode,
-            row.workDate,
-            statusLabel(row.status),
-            row.totalHours.toFixed(1),
-          ];
-      columns.forEach((c, i) => {
-        doc
-          .fontSize(9)
-          .fillColor(i === 3 ? statusColor(row.status) : "#26312b")
-          .text(String(cells[i] ?? ""), c.x + 4, y + 7, {
-            width: c.width - 8,
-            align: c.align,
-            lineBreak: false,
-            ellipsis: true,
-          });
-      });
-      y += rowHeight;
-    });
-    if (!rows.length)
-      doc
-        .fontSize(10)
-        .fillColor("#5c6661")
-        .text("No attendance records for this period.", 40, y + 6, {
-          width: contentWidth,
-        });
-    const pages = doc.bufferedPageRange();
-    for (let i = 0; i < pages.count; i++) {
-      doc.switchToPage(i);
-      doc.page.margins.bottom = 0;
-      doc
-        .fontSize(8)
-        .fillColor("#8b958f")
-        .text(
-          `Page ${i + 1} of ${pages.count}`,
-          40,
-          doc.page.height - 30,
-          { width: contentWidth, align: "right", lineBreak: false },
-        );
-    }
     doc.end();
   },
 );
@@ -348,7 +212,7 @@ reportsRouter.get(
       "FORBIDDEN",
       "Report generation permission is required.",
     );
-    const format = z.enum(["csv", "xlsx", "pdf"]).parse(req.query.format),
+    const format = z.enum(["xlsx", "pdf"]).parse(req.query.format),
       month = monthSchema.parse(req.query.month),
       employeeId = objectId.optional().parse(req.query.employeeId),
       search = z.string().trim().max(100).optional().parse(req.query.search);
@@ -406,10 +270,6 @@ reportsRouter.get(
       ]),
     ];
     res.attachment(`Salary_${month}.${format}`);
-    if (format === "csv") {
-      res.type("text/csv").send(csv(table));
-      return;
-    }
     if (format === "xlsx") {
       const workbook = new ExcelJS.Workbook();
       const sheet = workbook.addWorksheet("Salary");
