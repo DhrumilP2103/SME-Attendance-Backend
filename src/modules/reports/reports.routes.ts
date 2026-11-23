@@ -139,7 +139,9 @@ reportsRouter.get(
         .send(workbook);
       return;
     }
-    const doc = attendancePdf(register, company.name);
+    const doc = attendancePdf(register, company.name, rows, (amount) =>
+      moneyText(amount, company.currency),
+    );
     res.attachment(filename).type("application/pdf");
     doc.pipe(res);
     doc.end();

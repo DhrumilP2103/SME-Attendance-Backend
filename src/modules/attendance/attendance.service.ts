@@ -15,6 +15,7 @@ export interface AttendanceRow {
   employeeId: string;
   employeeName: string;
   employeeCode: string;
+  joiningDate: string;
   workDate: string;
   status: string;
   inTime: Date | null;
@@ -119,6 +120,7 @@ export async function attendanceRows(
         employeeId: String(emp._id),
         employeeName: emp.fullName,
         employeeCode: emp.employeeCode,
+        joiningDate: emp.joiningDate,
         email: emp.email,
         workDate: end,
         status: "UNMARKED",
@@ -144,6 +146,7 @@ export async function attendanceRows(
         employeeId: String(emp._id),
         employeeName: emp.fullName,
         employeeCode: emp.employeeCode,
+        joiningDate: emp.joiningDate,
         email: emp.email,
         workDate: row.workDate,
         status: row.status,

@@ -38,8 +38,8 @@ const colors: Record<string, string> = {
   HOLIDAY: "#796595",
 };
 
-const pdfLegend = "P Present   A Absent   – Unmarked   OT Overtime   h Recorded hours";
-const excelLegend = `${pdfLegend}   ½ Half day   L Leave   H Holiday`;
+const pdfLegend = "P Present   A Absent   – Unmarked   h Recorded hours";
+const excelLegend = "P Present   A Absent   – Unmarked   OT Overtime   h Recorded hours   ½ Half day   L Leave   H Holiday";
 
 function formatHours(hours: number) {
   return `${Number(hours.toFixed(2))} h`;
@@ -77,6 +77,7 @@ export function attendanceRegister(
       return {
         employee,
         total: hourly ? hours : combinedHours > 0 ? `${daysPresent} / ${hours}` : daysPresent,
+        pdfTotal: hourly ? formatHours(minutes / 60) : daysPresent,
         overtimeTotal,
         cells: days.map((day) => {
           const record = byDate.get(day.toISODate()!);
@@ -165,12 +166,16 @@ export async function attendanceWorkbook(register: Register) {
   return Buffer.from(await workbook.xlsx.writeBuffer());
 }
 
-export function attendancePdf(register: Register, companyName: string) {
+export function attendancePdf(
+  register: Register,
+  companyName: string,
+  rows: AttendanceRow[],
+  formatAmount: (amount: number) => string,
+) {
   const margin = 30;
   const employeeWidth = 145;
   const totalWidth = 66;
-  const overtimeWidth = 54;
-  const fixedWidth = employeeWidth + totalWidth + overtimeWidth;
+  const fixedWidth = employeeWidth + totalWidth;
   const pageWidth = Math.max(
     842,
     2 * margin + fixedWidth + register.days.length * 24,
@@ -184,8 +189,7 @@ export function attendancePdf(register: Register, companyName: string) {
   const width = pageWidth - 2 * margin;
   const dayWidth = Math.min(60, (width - fixedWidth) / register.days.length);
   const tableWidth = fixedWidth + register.days.length * dayWidth;
-  const overtimeX = margin + tableWidth - totalWidth - overtimeWidth;
-  const totalX = overtimeX + overtimeWidth;
+  const totalX = margin + tableWidth - totalWidth;
   const rowHeight = 28;
   const headerHeight = 38;
   let y = 0;
@@ -203,7 +207,6 @@ export function attendancePdf(register: Register, companyName: string) {
     doc.rect(margin, y, tableWidth, headerHeight).fill("#F3F6F3");
     doc.font("Helvetica-Bold").fontSize(9).fillColor("#34443B");
     text("Employee", margin + 7, y + 14, employeeWidth - 14);
-    text("Total OT", overtimeX, y + 14, overtimeWidth, "center");
     text("Total Hr", totalX, y + 14, totalWidth, "center");
     register.days.forEach((day, index) => {
       const x = margin + employeeWidth + index * dayWidth;
@@ -219,7 +222,7 @@ export function attendancePdf(register: Register, companyName: string) {
     y += headerHeight;
   }
   header();
-  register.employees.forEach(({ employee, cells, total, overtimeTotal }, index) => {
+  register.employees.forEach(({ employee, cells, pdfTotal }, index) => {
     if (y + rowHeight > doc.page.height - margin) {
       doc.addPage();
       header();
@@ -230,22 +233,13 @@ export function attendancePdf(register: Register, companyName: string) {
     doc.font("Helvetica").fontSize(8).fillColor("#67776D");
     text(employee.employeeCode, margin + 7, y + 16, employeeWidth - 14);
     doc.fillColor("#34443B");
-    text(overtimeTotal, overtimeX, y + 9, overtimeWidth, "center");
-    text(total, totalX, y + 9, totalWidth, "center");
-    cells.forEach(({ label, color, overtime }, column) => {
+    text(pdfTotal, totalX, y + 9, totalWidth, "center");
+    cells.forEach(({ label, color }, column) => {
       const x = margin + employeeWidth + column * dayWidth;
       if (color) doc.roundedRect(x + 1, y + 3, dayWidth - 2, 22, 3).fill(color);
-      if (overtime) {
-        doc.roundedRect(x + 1, y + 3, dayWidth - 2, 22, 3)
-          .lineWidth(1).stroke("#F59E0B");
-      }
       doc.font("Helvetica-Bold").fontSize(label.length > 3 ? 7 : 8)
         .fillColor(color ? "#FFFFFF" : "#67776D");
-      text(label, x, y + (overtime ? 5 : 10), dayWidth, "center");
-      if (overtime) {
-        doc.fontSize(6);
-        text("OT", x, y + 16, dayWidth, "center");
-      }
+      text(label, x, y + 10, dayWidth, "center");
     });
     y += rowHeight;
   });
@@ -253,5 +247,55 @@ export function attendancePdf(register: Register, companyName: string) {
     doc.font("Helvetica").fontSize(10).fillColor("#67776D");
     doc.text("No attendance records for this period.", margin, y + 12);
   }
+  const overtime = rows.filter((row) => row.isOvertime);
+  if (!overtime.length) return doc;
+
+  const overtimeColumns = [
+    { label: "Name", x: margin, width: 145 },
+    { label: "OT Hr", x: margin + 145, width: 60 },
+    { label: "Amount", x: margin + 205, width: 110 },
+    { label: "Remark", x: margin + 315, width: 335 },
+  ];
+  const overtimeTableWidth = 650;
+  const pageBottom = doc.page.height - margin;
+
+  function overtimeHeader(nextRowHeight: number) {
+    if (y + 44 + nextRowHeight > pageBottom) {
+      doc.addPage();
+      y = margin;
+    }
+    doc.font("Helvetica-Bold").fontSize(13).fillColor("#17664E");
+    doc.text("Overtime", margin, y);
+    y += 22;
+    doc.rect(margin, y, overtimeTableWidth, 22).fill("#F3F6F3");
+    doc.fontSize(9).fillColor("#34443B");
+    for (const { label, x, width } of overtimeColumns) {
+      text(label, x + 7, y + 6, width - 14);
+    }
+    y += 22;
+  }
+
+  y += 22;
+  overtime.forEach((row, index) => {
+    const values = [
+      row.employeeName,
+      row.otHours === undefined ? "–" : formatHours(row.otHours),
+      row.otAmount === undefined ? "–" : formatAmount(row.otAmount),
+      row.otRemark?.replace(/\s+/g, " ").trim() || "–",
+    ];
+    doc.font("Helvetica").fontSize(9);
+    const height = Math.max(rowHeight, ...overtimeColumns.map(({ width }, i) =>
+      Math.ceil(doc.heightOfString(values[i], { width: width - 14 })) + 14,
+    ));
+    if (!index || y + height > pageBottom) {
+      overtimeHeader(height);
+    }
+    if (index % 2) doc.rect(margin, y, overtimeTableWidth, height).fill("#F8FAF8");
+    doc.font("Helvetica").fontSize(9).fillColor("#34443B");
+    overtimeColumns.forEach(({ x, width }, i) => {
+      doc.text(values[i], x + 7, y + 7, { width: width - 14, height: height - 14 });
+    });
+    y += height;
+  });
   return doc;
 }
