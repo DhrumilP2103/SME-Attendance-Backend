@@ -145,6 +145,8 @@ employeesRouter.post(
     const body = profile
       .extend({
         email: profile.shape.email.optional().or(z.literal("")),
+        baseSalary: profile.shape.baseSalary.removeDefault().optional(),
+        hourlyRate: profile.shape.hourlyRate.removeDefault().optional(),
         role: z.enum(["EMPLOYEE", "HR"]).optional(),
         password: z
           .string()
@@ -153,7 +155,8 @@ employeesRouter.post(
           .optional(),
       })
       .parse(req.body);
-    payCheck(body);
+    if (body.baseSalary !== undefined || body.hourlyRate !== undefined)
+      payCheck(body);
     assert(
       body.role !== "HR" || req.auth!.user.role === "ADMIN",
       403,
@@ -268,7 +271,8 @@ employeesRouter.patch("/:id", async (req, res) => {
   const result = await mongoose.connection.transaction(async (session) => {
     const old = await Employee.findById(id).session(session);
     assert(old, 404, "NOT_FOUND", "Employee not found.");
-    payCheck({ ...old.toObject(), ...body });
+    if (body.baseSalary !== undefined || body.hourlyRate !== undefined)
+      payCheck({ ...old.toObject(), ...body });
     const { version, ...changes } = body;
     if (changes.email && changes.email !== old.email)
       assert(
