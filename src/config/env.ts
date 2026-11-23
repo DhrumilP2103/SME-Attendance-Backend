@@ -87,9 +87,13 @@ export const isAllowedOrigin = (origin?: string | null): boolean => {
   if (configuredOrigins.has(normalized)) return true;
   try {
     const url = new URL(normalized);
-    if (
+    const isIp =
+      /^(\d{1,3}\.){3}\d{1,3}$/.test(url.hostname) ||
+      url.hostname.startsWith("[") ||
       url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
+      url.hostname === "127.0.0.1";
+    if (
+      isIp ||
       url.hostname.endsWith(".vercel.app")
     ) {
       return true;
