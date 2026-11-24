@@ -215,6 +215,12 @@ export const CronConfig = model(
         attendance: { type: Boolean, default: true },
         salary: { type: Boolean, default: false },
       },
+      activityLogEmail: {
+        enabled: { type: Boolean, default: false },
+        intervalMonths: { type: Number, default: 2, min: 1, max: 12 },
+        lastSentAt: Date,
+        nextAttemptAt: Date,
+      },
       lastRunAt: Date,
       lastStatus: String,
       lastErrorMessage: String,

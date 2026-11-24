@@ -23,6 +23,7 @@ import {
   escapeRegex,
 } from "../../lib/core.js";
 import { queueAccountEmail } from "../../lib/email.js";
+import { logCreateActivity } from "../../lib/create-activity-log.js";
 
 export const employeesRouter = Router();
 employeesRouter.use(requirePermission("canManageEmployees"));
@@ -227,6 +228,17 @@ employeesRouter.post(
       );
       return { employee, invitation };
     });
+    logCreateActivity(
+      req.auth!.user,
+      "EMPLOYEE_CREATED",
+      {
+        type: "employee",
+        id: result.employee._id,
+        name: result.employee.fullName,
+        employeeCode: result.employee.employeeCode,
+      },
+      req,
+    );
     res.status(201).json({ data: result });
   },
 );

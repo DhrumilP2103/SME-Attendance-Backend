@@ -17,7 +17,115 @@ import { context, currency, escapeHtml, today } from "../lib/core.js";
 import { csv, reportTable } from "../modules/reports/reports.routes.js";
 import { calculatePayroll } from "../modules/payroll/payroll.service.js";
 import { sendMail, processOutbox } from "../lib/email.js";
+import { takeCreateActivityLog } from "../lib/create-activity-log.js";
 import mongoose from "mongoose";
+
+type CronConfigForActivityLog = {
+  _id: mongoose.Types.ObjectId;
+  adminRecipients: string[];
+  activityLogEmail?: {
+    enabled?: boolean;
+    intervalMonths?: number;
+    lastSentAt?: Date | null;
+    nextAttemptAt?: Date | null;
+  } | null;
+};
+
+async function deliverActivityLog(config: CronConfigForActivityLog) {
+  const settings = config.activityLogEmail;
+  if (!settings?.enabled || !config.adminRecipients.length) return;
+  if (settings.nextAttemptAt && settings.nextAttemptAt.getTime() > Date.now())
+    return;
+
+  const now = new Date();
+  const intervalMonths = Math.min(
+    12,
+    Math.max(1, Math.round(settings.intervalMonths ?? 2)),
+  );
+  const nextDelivery = () =>
+    DateTime.fromJSDate(now).plus({ months: intervalMonths }).toJSDate();
+  await CronConfig.updateOne(
+    { _id: config._id },
+    {
+      $set: {
+        "activityLogEmail.nextAttemptAt": new Date(
+          now.getTime() + 60 * 60 * 1000,
+        ),
+      },
+    },
+  );
+
+  const claim = await takeCreateActivityLog();
+  if (!claim) {
+    await CronConfig.updateOne(
+      { _id: config._id },
+      { $set: { "activityLogEmail.nextAttemptAt": nextDelivery() } },
+    );
+    return;
+  }
+
+  const entries = claim.content.split("\n").filter((line) => {
+    if (!line.trim()) return false;
+    try {
+      return typeof JSON.parse(line).action === "string";
+    } catch {
+      return false;
+    }
+  });
+  if (!entries.length) {
+    await claim.commit();
+    await CronConfig.updateOne(
+      { _id: config._id },
+      { $set: { "activityLogEmail.nextAttemptAt": nextDelivery() } },
+    );
+    return;
+  }
+
+  try {
+    const company = await context();
+    await sendMail(
+      config.adminRecipients,
+      `Create activity log · ${entries.length} entries · ${company.name}`,
+      `<div style="font:14px Arial;max-width:680px;margin:30px auto;color:#203c33"><h1>${escapeHtml(company.name)}</h1><h2>Create activity log</h2><p>${entries.length} create activity ${entries.length === 1 ? "entry is" : "entries are"} attached for the current delivery period. The log is cleared after the email is accepted by the mail service.</p><p style="color:#7b8781">Prepared ${escapeHtml(now.toISOString())} · ${escapeHtml(company.timezone)}</p></div>`,
+      [
+        {
+          filename: `create-activity-${now.toISOString().slice(0, 10)}.log`,
+          content: claim.content,
+        },
+      ],
+    );
+  } catch (error) {
+    await claim.rollback().catch(() => {
+      console.error("Activity log rollback failed after delivery failure.");
+    });
+    await CronConfig.updateOne(
+      { _id: config._id },
+      {
+        $set: {
+          "activityLogEmail.nextAttemptAt": new Date(
+            Date.now() + 60 * 60 * 1000,
+          ),
+        },
+      },
+    );
+    console.error("Activity log delivery failed", {
+      message: error instanceof Error ? error.message : "Unknown error",
+    });
+    return;
+  }
+  await claim.commit().catch(() => {
+    console.error("Activity log was delivered but its file could not be cleared.");
+  });
+  await CronConfig.updateOne(
+    { _id: config._id },
+    {
+      $set: {
+        "activityLogEmail.lastSentAt": now,
+        "activityLogEmail.nextAttemptAt": nextDelivery(),
+      },
+    },
+  );
+}
 
 async function markIncomplete(cutoffDate: string) {
   await mongoose.connection.transaction(async (session) => {
@@ -64,6 +172,13 @@ export async function tick() {
         ? date
         : now.minus({ days: 1 }).toISODate()!,
     );
+    try {
+      await deliverActivityLog(config);
+    } catch {
+      console.error(
+        "Activity log delivery cycle failed; retrying on a later cycle.",
+      );
+    }
     if (
       config.isEnabled &&
       config.adminRecipients.length &&

@@ -26,6 +26,7 @@ import {
   today,
 } from "../../lib/core.js";
 import { attendanceRows, summarize } from "./attendance.service.js";
+import { logCreateActivity } from "../../lib/create-activity-log.js";
 
 export const attendanceRouter = Router();
 attendanceRouter.get("/", async (req, res) => {
@@ -105,6 +106,7 @@ for (const action of ["check-in", "check-out"] as const) {
         "Your joining date has not arrived.",
       );
       const idempotencyKey = `${req.auth!.user._id}:${action}:${key}`;
+      let created = false;
       const data = await mongoose.connection.transaction(async (session) => {
         const cached = await IdempotencyRecord.findOne({
           key: idempotencyKey,
@@ -146,6 +148,7 @@ for (const action of ["check-in", "check-out"] as const) {
             ],
             { session },
           );
+          created = true;
         } else {
           assert(
             old?.inTime && !old.outTime,
@@ -205,6 +208,17 @@ for (const action of ["check-in", "check-out"] as const) {
         );
         return response;
       });
+      if (action === "check-in" && created)
+        logCreateActivity(
+          req.auth!.user,
+          "ATTENDANCE_CREATED",
+          {
+            type: "attendance",
+            employeeId: employee._id,
+            workDate: data.workDate,
+          },
+          req,
+        );
       res.json({ data });
     },
   );
@@ -408,6 +422,18 @@ attendanceRouter.put(
       );
       return { id: record._id, version: record.version };
     });
+    if (body.version === 0)
+      logCreateActivity(
+        req.auth!.user,
+        "ATTENDANCE_CREATED",
+        {
+          type: "attendance",
+          id: updated.id,
+          employeeId: employee._id,
+          workDate,
+        },
+        req,
+      );
     res.json({ data: updated });
   },
 );

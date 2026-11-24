@@ -20,6 +20,7 @@ import {
 } from "./permissions.js";
 import { assert, objectId, pagination } from "../../lib/core.js";
 import { queueAccountEmail } from "../../lib/email.js";
+import { logCreateActivity } from "../../lib/create-activity-log.js";
 
 export const managementRouter = Router();
 managementRouter.get("/users", adminOnly, async (req, res) => {
@@ -89,6 +90,12 @@ managementRouter.post(
       );
       return { id: user._id, invitation };
     });
+    logCreateActivity(
+      req.auth!.user,
+      "ACCOUNT_INVITED",
+      { type: "account", id: result.id, name: body.name },
+      req,
+    );
     res.status(201).json({ data: result });
   },
 );
@@ -111,6 +118,12 @@ managementRouter.post(
     );
     const invitation = await mongoose.connection.transaction((session) =>
       queueAccountEmail(user, "INVITE", session),
+    );
+    logCreateActivity(
+      req.auth!.user,
+      "INVITATION_RESENT",
+      { type: "account", id: user._id, name: user.name },
+      req,
     );
     res.status(202).json({ data: invitation });
   },

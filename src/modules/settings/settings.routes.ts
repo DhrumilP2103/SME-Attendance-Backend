@@ -19,6 +19,7 @@ import {
   pagination,
 } from "../../lib/core.js";
 import { smtpConfigured } from "../../lib/email.js";
+import { logCreateActivity } from "../../lib/create-activity-log.js";
 
 export const settingsRouter = Router();
 settingsRouter.get("/settings/company", async (_req, res) =>
@@ -71,12 +72,18 @@ settingsRouter.get("/settings/eod", adminOnly, async (_req, res) => {
         attendance: config?.sections?.attendance ?? true,
         salary: Boolean(config?.sections?.salary),
       },
+      activityLogEmail: {
+        enabled: Boolean(config?.activityLogEmail?.enabled),
+        intervalMonths: config?.activityLogEmail?.intervalMonths ?? 2,
+        lastSentAt: config?.activityLogEmail?.lastSentAt,
+        nextAttemptAt: config?.activityLogEmail?.nextAttemptAt,
+      },
       emailDelivery: smtpConfigured ? "SMTP" : "LOCAL_OUTBOX",
     },
   });
 });
 settingsRouter.patch("/settings/eod", adminOnly, async (req, res) => {
-  const body = z
+  const parsed = z
     .object({
       isEnabled: z.boolean(),
       scheduledTime: timeSchema,
@@ -94,14 +101,55 @@ settingsRouter.patch("/settings/eod", adminOnly, async (req, res) => {
           salary: z.boolean(),
         })
         .strict(),
+      activityLogEmail: z
+        .object({
+          enabled: z.boolean(),
+          intervalMonths: z.number().int().min(1).max(12),
+        })
+        .strict()
+        .optional(),
     })
     .strict()
     .parse(req.body);
+  const { activityLogEmail, ...body } = parsed;
   const data = await mongoose.connection.transaction(async (session) => {
     const old = await CronConfig.findOne().session(session);
+    const current = old?.activityLogEmail;
+    const wasEnabled = Boolean(current?.enabled);
+    const enabled = activityLogEmail?.enabled ?? wasEnabled;
+    const intervalMonths = activityLogEmail?.intervalMonths ?? current?.intervalMonths ?? 2;
+    let nextAttemptAt = current?.nextAttemptAt;
+    if (!enabled) nextAttemptAt = undefined;
+    else if (
+      !wasEnabled ||
+      intervalMonths !== (current?.intervalMonths ?? 2) ||
+      !nextAttemptAt
+    )
+      nextAttemptAt =
+        !wasEnabled || !current?.lastSentAt
+          ? DateTime.now().plus({ months: intervalMonths }).toJSDate()
+          : DateTime.fromJSDate(current.lastSentAt)
+              .plus({ months: intervalMonths })
+              .toJSDate();
+    const update = {
+      ...body,
+      ...(activityLogEmail
+        ? {
+            activityLogEmail: {
+              enabled,
+              intervalMonths,
+              ...(current?.lastSentAt
+                ? { lastSentAt: current.lastSentAt }
+                : {}),
+              ...(nextAttemptAt ? { nextAttemptAt } : {}),
+            },
+          }
+        : {}),
+      updatedBy: req.auth!.user._id,
+    };
     const result = await CronConfig.findOneAndUpdate(
       { taskName: "EOD_ATTENDANCE_REPORT" },
-      { ...body, updatedBy: req.auth!.user._id },
+      update,
       { new: true, upsert: true, session },
     );
     await AuditLog.create(
@@ -111,7 +159,7 @@ settingsRouter.patch("/settings/eod", adminOnly, async (req, res) => {
           entityId: "eod-settings",
           action: "EOD_SETTINGS",
           before: old?.toObject(),
-          after: body,
+          after: parsed,
         },
       ],
       { session },
@@ -157,6 +205,12 @@ settingsRouter.post("/eod/send", adminOnly, async (req, res) => {
     409,
     "IDEMPOTENCY_CONFLICT",
     "This request key was already used for a different date.",
+  );
+  logCreateActivity(
+    req.auth!.user,
+    "EOD_REPORT_QUEUED",
+    { type: "eod_run", id: run!._id, workDate },
+    req,
   );
   res.status(202).json({ data: { runId: run!._id, status: run!.status } });
 });
